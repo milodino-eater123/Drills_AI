@@ -1,0 +1,116 @@
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import cv2 as cv
+import time
+import numpy as np
+
+#boring stuff
+cap = cv.VideoCapture(0)
+model_path = NotImplemented
+
+BaseOptions = mp.tasks.BaseOptions
+PoseLandmarker = vision.PoseLandmarker
+PoseLandmarkerOptions = vision.PoseLandmarkerOptions
+PoseLandmarkerResult = vision.PoseLandmarkerResult
+RunningMode = vision.RunningMode
+
+feedback = []
+isFormCorrect = False
+#helper functions
+def calcAngle(a,b,c):
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
+
+    ba = a-b
+    bc = c-b
+
+    dot_product = np.dot(ba,bc)
+    magnitude = np.linalg.norm(ba) * np.linalg.norm(bc) 
+    angle = np.degrees(np.arccos(dot_product/magnitude))
+    return angle
+
+#drill detection logic
+def callbackFunction(result,image,timestamp):
+    global feedback, isFormCorrect
+    if not result.pose_landmarks:
+        return
+    landmarks = result.pose_landmarks[0]
+    
+    #correct for different dimensions
+    height,width, = image.height,image.width
+    aspect_ratio = width/height
+
+    right_shoulder = [landmarks[12].x*aspect_ratio, landmarks[12].y]
+    left_shoulder = [landmarks[11].x*aspect_ratio, landmarks[11].y]
+    right_elbow = [landmarks[14].x*aspect_ratio, landmarks[14].y]
+    right_wrist = [landmarks[16].x*aspect_ratio, landmarks[16].y]
+    right_index = [landmarks[20].x*aspect_ratio, landmarks[20].y]
+    right_eye = [landmarks[6].x*aspect_ratio, landmarks[6].y]
+
+    #arm at 90 degrees
+    upper_arm_angle = calcAngle(left_shoulder, right_shoulder, right_elbow)
+    isUpperArmPerpendicular = 170 <= upper_arm_angle <= 180
+    
+    #forearm and hand straight
+    forearm_angle = calcAngle(right_elbow,right_wrist,right_index)
+    isForearmStraight = 170 <= forearm_angle <= 180
+
+    #fingertip next to eyebrow(using eye for now)
+    dist = np.linalg.norm(np.array(right_index) - np.array(right_eye))
+    isFingerAtEyebrow = dist < 0.05
+
+    errors = []
+    if not isUpperArmPerpendicular:
+        errors.append("Arm not perpendicular")
+    if not isForearmStraight:
+        errors.append("Forearm not straight")
+    if not isFingerAtEyebrow:
+        errors.append("Finger not at eyebrow")
+
+    feedback = errors
+    isFormCorrect = isUpperArmPerpendicular and isForearmStraight and isFingerAtEyebrow
+    
+
+
+
+
+
+
+#main
+options = PoseLandmarkerOptions(
+    base_options = BaseOptions(model_asset_path=model_path),
+    running_mode = RunningMode.LIVE_STREAM,
+    result_callback = callbackFunction,
+)
+
+with PoseLandmarker.create_from_options(options) as landmarker:
+    while True:
+        working,frame = cap.read()
+        if not working:
+            continue
+        frame = cv.flip(frame, 1)
+        frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+        timestamp = int(time.time()*1000)
+        landmarker.detect_async(mp_image, timestamp)
+
+        #display
+        height, width, _ = frame.shape
+        color = (0, 255, 0) if isFormCorrect else (0, 0, 255)
+        cv.rectangle(frame, (0, 0), (width, height), color, 20)
+
+        font_scale = width / 1000
+        for i, line in enumerate(feedback):
+            (text_width, text_height), _ = cv.getTextSize(line, cv.FONT_HERSHEY_SIMPLEX, font_scale, 2)
+            x = (width - text_width) // 2
+            y = int(height * 0.1) + i * int(text_height * 0.5)
+            cv.putText(frame, line, (x, y), cv.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
+
+        cv.imshow("Drill Checker", frame)
+        if cv.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+cap.release()
+cv.destroyAllWindows
