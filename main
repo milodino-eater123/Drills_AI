@@ -1,13 +1,16 @@
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision import drawing_utils
+from mediapipe.tasks.python.vision import drawing_styles
 import cv2 as cv
 import time
 import numpy as np
 
 #boring stuff
 cap = cv.VideoCapture(0)
-model_path = NotImplemented
+model_path = r"C:\Users\samue\Downloads\pose_landmarker_full.task"
+latest_result = None
 
 BaseOptions = mp.tasks.BaseOptions
 PoseLandmarker = vision.PoseLandmarker
@@ -30,24 +33,47 @@ def calcAngle(a,b,c):
     magnitude = np.linalg.norm(ba) * np.linalg.norm(bc) 
     angle = np.degrees(np.arccos(dot_product/magnitude))
     return angle
+def drawSkeleton(image1,result):
+    if not result:
+        return 
+    if not result.pose_landmarks:
+        return
+    new_image = np.copy(image1)
+    landmarks = result.pose_landmarks [0]
+
+    pose_landmark_style = drawing_styles.get_default_pose_landmarks_style()
+    pose_connection_style = drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=2)
+
+
+    drawing_utils.draw_landmarks(
+            image=new_image,
+            landmark_list=landmarks,
+            connections=vision.PoseLandmarksConnections.POSE_LANDMARKS,
+            landmark_drawing_spec=pose_landmark_style,
+            connection_drawing_spec=pose_connection_style)
+    return new_image
+
+
 
 #drill detection logic
 def callbackFunction(result,image,timestamp):
-    global feedback, isFormCorrect
+    global feedback, isFormCorrect,latest_result
     if not result.pose_landmarks:
         return
+    latest_result = result
     landmarks = result.pose_landmarks[0]
     
     #correct for different dimensions
     height,width, = image.height,image.width
     aspect_ratio = width/height
 
-    right_shoulder = [landmarks[12].x*aspect_ratio, landmarks[12].y]
-    left_shoulder = [landmarks[11].x*aspect_ratio, landmarks[11].y]
-    right_elbow = [landmarks[14].x*aspect_ratio, landmarks[14].y]
-    right_wrist = [landmarks[16].x*aspect_ratio, landmarks[16].y]
-    right_index = [landmarks[20].x*aspect_ratio, landmarks[20].y]
-    right_eye = [landmarks[6].x*aspect_ratio, landmarks[6].y]
+
+    right_shoulder = [landmarks[11].x*aspect_ratio, landmarks[11].y]
+    left_shoulder = [landmarks[12].x*aspect_ratio, landmarks[12].y]
+    right_elbow = [landmarks[13].x*aspect_ratio, landmarks[13].y]
+    right_wrist = [landmarks[15].x*aspect_ratio, landmarks[15].y]
+    right_index = [landmarks[19].x*aspect_ratio, landmarks[19].y]
+    right_eye = [landmarks[3].x*aspect_ratio, landmarks[3].y]
 
     #arm at 90 degrees
     upper_arm_angle = calcAngle(left_shoulder, right_shoulder, right_elbow)
@@ -55,11 +81,11 @@ def callbackFunction(result,image,timestamp):
     
     #forearm and hand straight
     forearm_angle = calcAngle(right_elbow,right_wrist,right_index)
-    isForearmStraight = 170 <= forearm_angle <= 180
+    isForearmStraight = 160 <= forearm_angle <= 180
 
     #fingertip next to eyebrow(using eye for now)
     dist = np.linalg.norm(np.array(right_index) - np.array(right_eye))
-    isFingerAtEyebrow = dist < 0.05
+    isFingerAtEyebrow = dist < 0.13
 
     errors = []
     if not isUpperArmPerpendicular:
@@ -71,10 +97,6 @@ def callbackFunction(result,image,timestamp):
 
     feedback = errors
     isFormCorrect = isUpperArmPerpendicular and isForearmStraight and isFingerAtEyebrow
-    
-
-
-
 
 
 
@@ -95,6 +117,7 @@ with PoseLandmarker.create_from_options(options) as landmarker:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
         timestamp = int(time.time()*1000)
         landmarker.detect_async(mp_image, timestamp)
+        result = latest_result
 
         #display
         height, width, _ = frame.shape
@@ -105,12 +128,14 @@ with PoseLandmarker.create_from_options(options) as landmarker:
         for i, line in enumerate(feedback):
             (text_width, text_height), _ = cv.getTextSize(line, cv.FONT_HERSHEY_SIMPLEX, font_scale, 2)
             x = (width - text_width) // 2
-            y = int(height * 0.1) + i * int(text_height * 0.5)
+            y = int(height * 0.1) + i * int(text_height * 1.5)
             cv.putText(frame, line, (x, y), cv.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), 2)
+        
+        annotated_frame = drawSkeleton(frame,result)
 
-        cv.imshow("Drill Checker", frame)
-        if cv.waitKey(1) & 0xFF == ord('q'):
+        cv.imshow("Drill Checker", annotated_frame)
+        if cv.waitKey(1) == ord('q'):
             break
     
 cap.release()
-cv.destroyAllWindows
+cv.destroyAllWindows()
